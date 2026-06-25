@@ -474,6 +474,7 @@ JX_Int JXPAMG_Solver(JX_Int              argc,
    JX_Int       agg_num_levels;
    JX_Real      predictive_theta = (JX_Real)0.0;
    JX_Int       predictive_lreuse = -1;
+   JX_Int       predictive_mode = 0;    /* 0=3A (diagonal probe), 1=3B-2 (residual probe) */
    JX_Int       ai_measure_type;
    JX_Int       ai_relax_type;
    JX_Real    strong_threshold;
@@ -820,6 +821,15 @@ JX_Int JXPAMG_Solver(JX_Int              argc,
       {
          arg_index ++;
          predictive_lreuse = atoi(argv[arg_index++]);
+      }
+      else if ( strcmp(argv[arg_index], "-pmode") == 0 )
+      {
+         arg_index ++;
+         if (strcmp(argv[arg_index], "3b2") == 0)
+            predictive_mode = 1;
+         else
+            predictive_mode = 0;  /* default 3A */
+         arg_index ++;
       }
       else if ( strcmp(argv[arg_index], "-scs") == 0 )
       {
@@ -1273,7 +1283,26 @@ JX_Int JXPAMG_Solver(JX_Int              argc,
             JX_Int N = jx_ParAMGDataNumLevels((jx_ParAMGData *)amg_solver);
             jx_ParCSRMatrix *candidate_A_cut = NULL;
 
-            if (predictive_theta > (JX_Real)0.0) {
+            if (predictive_theta > (JX_Real)0.0 && predictive_mode == 1) {
+               /* 3B-2: independent topology-frozen probe + rebuild.
+                * Allow fallback to full setup if 3B-2 fails or produces
+                * a degraded hierarchy (common for very different matrices). */
+               probe_status = JXPAMG_PR_AdaptiveReuse3B2(
+                  (jx_ParAMGData *)amg_solver, par_matrix,
+                  predictive_theta, predictive_lreuse, 0);
+               if (myid == 0) {
+                  if (probe_status == 0)
+                     jx_printf("[predictive-reuse] 3B-2 completed\n");
+                  else
+                     jx_printf("[predictive-reuse] 3B-2 failed (status=%d), full setup\n", probe_status);
+               }
+               if (probe_status != 0) {
+                  probe_status = JXPAMG_PR_FullSetupOnNewMatrix((jx_ParAMGData *)amg_solver, par_matrix);
+               }
+               JX_PCGSetPrecond(solver, (JX_PtrToSolverFcn)JX_PAMGPrecond,
+                                (JX_PtrToSolverFcn)JX_PAMGSetup, amg_solver);
+            } else if (predictive_theta > (JX_Real)0.0) {
+               /* 3A: probe + Gate C/D routing */
                probe_status = JXPAMG_PR_PredictCutReadOnlyWithCandidate(
                   (jx_ParAMGData *)amg_solver, par_matrix,
                   predictive_theta, predictive_lreuse,
@@ -1286,11 +1315,13 @@ JX_Int JXPAMG_Solver(JX_Int              argc,
                }
             }
 
-            JX_Int use_full_reuse = 0;
-            if (probe_status == 0 &&
-                nprocs == 1 &&
-                JXPAMG_PR_CanFullReuse((jx_ParAMGData *)amg_solver,
-                                       par_matrix, cut_k, predictive_lreuse))
+            /* Gate C/D routing: 3A only. 3B-2 handles everything internally. */
+            if (predictive_mode == 0) {
+               JX_Int use_full_reuse = 0;
+               if (probe_status == 0 &&
+                   nprocs == 1 &&
+                   JXPAMG_PR_CanFullReuse((jx_ParAMGData *)amg_solver,
+                                          par_matrix, cut_k, predictive_lreuse))
             {
                use_full_reuse = 1;
             }
@@ -1340,14 +1371,15 @@ JX_Int JXPAMG_Solver(JX_Int              argc,
                }
             }
 
-            if (probe_status != 0) {
-               if (candidate_A_cut != NULL) { jx_ParCSRMatrixDestroy(candidate_A_cut); candidate_A_cut = NULL; }
-               if (myid == 0) jx_printf("[predictive-reuse] setup FAILED (status=%d)\n", probe_status);
-               JX_ParCSRPCGDestroy(solver);
-               solve_status = 1;
-               solver = NULL;
-               break;
-            }
+               if (probe_status != 0) {
+                  if (candidate_A_cut != NULL) { jx_ParCSRMatrixDestroy(candidate_A_cut); candidate_A_cut = NULL; }
+                  if (myid == 0) jx_printf("[predictive-reuse] setup FAILED (status=%d)\n", probe_status);
+                  JX_ParCSRPCGDestroy(solver);
+                  solve_status = 1;
+                  solver = NULL;
+                  break;
+               }
+            } /* if (predictive_mode == 0) */
             if (myid == 0 && predictive_theta > (JX_Real)0.0)
                jx_printf("[predictive-reuse] setup completed\n");
          } else {

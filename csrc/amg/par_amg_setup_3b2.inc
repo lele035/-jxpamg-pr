@@ -358,11 +358,24 @@ JXPAMG_PR_AdaptiveReuse3B2(jx_ParAMGData *amg_data,
       A_array[0] = new_A_fine;
    }
 
-   if (my_id == 0 && active_count > 0)
-      jx_printf("[predictive-3b2] active nodes at lv 0: %d\n", active_count);
+    if (my_id == 0 && active_count > 0)
+       jx_printf("[predictive-3b2] active nodes at lv 0: %d\n", active_count);
 
-   /* Step 3: Level loop */
-   for (level = 0; level < L; level++)
+    /* If nearly all nodes are active, topology freeze is meaningless;
+     * signal the caller to fall back to full setup. */
+    {
+       JX_Int total_rows = jx_ParCSRMatrixGlobalNumRows(new_A_fine);
+       if (active_count > total_rows * 0.9)
+       {
+          if (my_id == 0)
+             jx_printf("[predictive-3b2] too many active nodes (%d/%d), fallback\n",
+                       active_count, total_rows);
+          return 1;
+       }
+    }
+
+    /* Step 3: Level loop */
+    for (level = 0; level < L; level++)
    {
       /* 3a: Freeze CF topology */
       /* CF_marker_array[level] is already kept from base setup */
@@ -477,6 +490,17 @@ JXPAMG_PR_AdaptiveReuse3B2_Residual(jx_ParAMGData *amg_data,
 
    if (my_id == 0 && active_count > 0)
       jx_printf("[predictive-3b2] active nodes at lv 0: %d\n", active_count);
+
+   {
+      JX_Int total_rows = jx_ParCSRMatrixGlobalNumRows(new_A_fine);
+      if (active_count > total_rows * 0.9)
+      {
+         if (my_id == 0)
+            jx_printf("[predictive-3b2] too many active nodes (%d/%d), fallback\n",
+                      active_count, total_rows);
+         return 1;
+      }
+   }
 
    for (level = 0; level < L; level++)
    {
