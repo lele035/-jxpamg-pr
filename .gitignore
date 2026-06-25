@@ -1,0 +1,11 @@
+*.o
+*.a
+*.log
+*.out
+*.swp
+*.swo
+*~
+.DS_Store
+lib/
+install/
+test_*

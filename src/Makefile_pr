@@ -1,0 +1,24 @@
+JXPAMGDIR = ./jxpamg-0220-pr
+MPIDIR = /opt/intel/oneapi/mpi/2021.6.0
+MKL_DIR = /opt/intel/oneapi/mkl/2022.1.0
+JX_USE_BIG_DOUBLE = YES
+
+CC = mpiicc
+JX_BIG_DOUBLE_OPTION = -DJX_USING_BIG_DOUBLE=1
+JX_BIG_INT_OPTION = -DJX_USING_BIG_INT=0
+JX_OMP_CP_OPTION = -DJX_USING_OPENMP=0
+C_COMPILE_OPTION = -O2 ${JX_OMP_CP_OPTION} ${JX_BIG_INT_OPTION} ${JX_BIG_DOUBLE_OPTION}
+INCLUDES = -I $(JXPAMGDIR)/include -I ${MPIDIR}/include -I $(MKL_DIR)/include
+LIB_MKL = -L $(MKL_DIR)/lib/intel64 -lmkl_intel_lp64 -lmkl_intel_thread -lmkl_core -liomp5 -lpthread -ldl -lm
+LIB = -L $(JXPAMGDIR)/lib -lJXPAMG -L ${MPIDIR}/lib -lmpicxx ${LIB_MKL}
+CFLAGS = ${C_COMPILE_OPTION} -I. ${INCLUDES}
+FLAGS = ${JX_BIG_INT_OPTION} ${JX_BIG_DOUBLE_OPTION}
+
+.c.o:
+	${CC} -o $@ -c ${CFLAGS} $<
+
+OBJS = ./src/solver.o ./src/jxpamg_interface.o
+solver_pr:${OBJS}
+	${CC} -o solver_pr ${FLAGS} ${OBJS} ${LIB}
+clean:
+	rm -rf solver_pr ./src/*.o

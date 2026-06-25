@@ -1,0 +1,4 @@
+binary_md5	np	matrix1	matrix2	theta	probe_status	cut_k	path	setup_fn	iterations	residual	exit
+7d7a4182	1	Velx-0	Vely-0	0.5	0	6	full_reuse	noop_setup	5	1.946679e-07	0
+7d7a4182	1	Velx-0	Velz-0	1e-7	0	1	tail_rebuild	JX_PAMGSetup	5	3.398904e-07	0
+7d7a4182	1	Velx-0	Vely-0	1e-7	0	0	full_setup	JX_PAMGSetup	4	9.420829e-07	0

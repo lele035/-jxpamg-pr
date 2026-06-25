@@ -1,0 +1,391 @@
+//========================================================================//
+//  JXPAMG(IAPCM & XTU Parallel Algebraic Multigrid) (c) 2009-2013        //
+//  Institute of Applied Physics and Computational Mathematics            //
+//  School of Mathematics and Computational Science Xiangtan University   //
+//========================================================================//
+
+/*!
+ *  par_relax_0.c
+ *  Date: 2011/09/03
+ */ 
+
+#include "jx_mv.h"
+
+/*!
+ * \fn JX_Int jx_PAMGRelax0
+ * \brief Jacobi or CF-Jacobi
+ * \date 2011/09/03
+ */
+JX_Int
+jx_PAMGRelax0( jx_ParCSRMatrix *par_matrix,
+               jx_ParVector    *par_rhs,
+               JX_Int             *cf_marker,
+               JX_Int              relax_points,
+               JX_Real           relax_weight,
+               JX_Real           omega,
+               jx_ParVector    *par_app,
+               jx_ParVector    *Vtemp )
+{
+   MPI_Comm         comm         = jx_ParCSRMatrixComm(par_matrix);
+   jx_CSRMatrix    *A_diag       = jx_ParCSRMatrixDiag(par_matrix);
+   JX_Real          *A_diag_data  = jx_CSRMatrixData(A_diag);
+   JX_Int             *A_diag_i     = jx_CSRMatrixI(A_diag);
+   JX_Int             *A_diag_j     = jx_CSRMatrixJ(A_diag);
+   jx_CSRMatrix    *A_offd       = jx_ParCSRMatrixOffd(par_matrix);
+   JX_Int             *A_offd_i     = jx_CSRMatrixI(A_offd);
+   JX_Real          *A_offd_data  = jx_CSRMatrixData(A_offd);
+   JX_Int             *A_offd_j     = jx_CSRMatrixJ(A_offd);
+   jx_ParCSRCommPkg    *comm_pkg = jx_ParCSRMatrixCommPkg(par_matrix);
+   jx_ParCSRCommHandle *comm_handle = NULL;
+
+   JX_Int             n        = jx_CSRMatrixNumRows(A_diag);
+   JX_Int             num_cols_offd = jx_CSRMatrixNumCols(A_offd);
+   
+   jx_Vector      *u_local = jx_ParVectorLocalVector(par_app);
+   JX_Real         *u_data  = jx_VectorData(u_local);
+
+   jx_Vector      *f_local = jx_ParVectorLocalVector(par_rhs);
+   JX_Real         *f_data  = jx_VectorData(f_local);
+
+   jx_Vector      *Vtemp_local = jx_ParVectorLocalVector(Vtemp);
+   JX_Real         *Vtemp_data  = jx_VectorData(Vtemp_local);
+   JX_Real 	  *Vext_data  = NULL;
+   JX_Real 	  *v_buf_data = NULL;
+
+   JX_Int             i, j;
+   JX_Int             ii, jj;
+   JX_Int             relax_error = 0;
+   JX_Int             num_sends = 0;
+   JX_Int             index, start;
+   JX_Int             num_procs, my_id;
+
+   JX_Real          zero = 0.0;
+   JX_Real          res;
+   JX_Real          one_minus_weight;
+
+   one_minus_weight = 1.0 - relax_weight;
+
+   jx_MPI_Comm_size(comm, &num_procs);  
+   jx_MPI_Comm_rank(comm, &my_id);  
+
+  /*-------------------------------------------------------------------------
+   * added by peghoty, if the comm_pkg of par_matrix is not created  
+   * previously, something will be wrong when the "relax" function  
+   * is called on multi-processors occasions.  2009/07/24
+   *----------------------------------------------------------------------- */
+   
+   if (!comm_pkg)
+   {
+      jx_MatvecCommPkgCreate(par_matrix);
+      comm_pkg = jx_ParCSRMatrixCommPkg(par_matrix); 
+   }
+      //------------------------------------------------------------------------------//
+      //-----------------------------   Weighted Jacobi  -----------------------------//
+      //------------------------------------------------------------------------------//
+
+	 if (num_procs > 1)
+	 {
+   	    num_sends  = jx_ParCSRCommPkgNumSends(comm_pkg);
+   	    v_buf_data = jx_CTAlloc(JX_Real, jx_ParCSRCommPkgSendMapStart(comm_pkg, num_sends));
+	    Vext_data  = jx_CTAlloc(JX_Real,num_cols_offd);
+       
+	    if (num_cols_offd)
+	    {
+               A_offd_j = jx_CSRMatrixJ(A_offd);
+               A_offd_data = jx_CSRMatrixData(A_offd);
+	    }
+   	    index = 0;
+   	    for (i = 0; i < num_sends; i ++)
+   	    {
+        	start = jx_ParCSRCommPkgSendMapStart(comm_pkg, i);
+        	for (j = start; j < jx_ParCSRCommPkgSendMapStart(comm_pkg, i+1); j ++)
+        	{
+                   v_buf_data[index ++] = u_data[jx_ParCSRCommPkgSendMapElmt(comm_pkg, j)];
+                }
+   	    }
+ 
+   	    comm_handle = jx_ParCSRCommHandleCreate(1, comm_pkg, v_buf_data, Vext_data);
+	 }
+
+        /*-----------------------------------------------------------------
+         * Copy current approximation into temporary vector.
+         *-----------------------------------------------------------------*/
+         
+#define JX_SMP_PRIVATE i
+#include "../../../include/jx_smp_forloop.h"
+         for (i = 0; i < n; i ++)
+         {
+            Vtemp_data[i] = u_data[i];
+         }
+	 if (num_procs > 1)
+	 { 
+            jx_ParCSRCommHandleDestroy(comm_handle);
+            comm_handle = NULL;
+	 } 
+
+        /*-----------------------------------------------------------------
+         * Relax all points.
+         *-----------------------------------------------------------------*/
+
+         if (relax_points == 0)
+         {
+#define JX_SMP_PRIVATE i,ii,jj,res
+#include "../../../include/jx_smp_forloop.h"
+            for (i = 0; i < n; i ++)
+            {
+
+              /*----------------------------------------------------------------
+               * If diagonal is nonzero, relax point i; otherwise, skip it.
+               *---------------------------------------------------------------*/
+             
+               if (A_diag_data[A_diag_i[i]] != zero)
+               {
+                  res = f_data[i];
+                  for (jj = A_diag_i[i]+1; jj < A_diag_i[i+1]; jj ++)
+                  {
+                     ii = A_diag_j[jj];
+                     res -= A_diag_data[jj] * Vtemp_data[ii];
+                  }
+                  for (jj = A_offd_i[i]; jj < A_offd_i[i+1]; jj ++)
+                  {
+                     ii = A_offd_j[jj];
+                     res -= A_offd_data[jj] * Vext_data[ii];
+                  }
+                  u_data[i] *= one_minus_weight; 
+                  u_data[i] += relax_weight * res / A_diag_data[A_diag_i[i]];
+               }
+            }
+         }
+
+        /*-----------------------------------------------------------------
+         * Relax only C or F points as determined by relax_points.
+         *-----------------------------------------------------------------*/
+
+         else
+         {
+#define JX_SMP_PRIVATE i,ii,jj,res
+#include "../../../include/jx_smp_forloop.h"
+            for (i = 0; i < n; i ++)
+            {
+
+              /*-----------------------------------------------------------
+               * If i is of the right type ( C or F ) and diagonal is
+               * nonzero, relax point i; otherwise, skip it.
+               *-----------------------------------------------------------*/
+             
+               if (cf_marker[i] == relax_points && A_diag_data[A_diag_i[i]] != zero)
+               {
+                  res = f_data[i];
+                  for (jj = A_diag_i[i]+1; jj < A_diag_i[i+1]; jj ++)
+                  {
+                     ii = A_diag_j[jj];
+                     res -= A_diag_data[jj] * Vtemp_data[ii];
+                  }
+                  for (jj = A_offd_i[i]; jj < A_offd_i[i+1]; jj ++)
+                  {
+                     ii = A_offd_j[jj];
+                     res -= A_offd_data[jj] * Vext_data[ii];
+                  }
+                  u_data[i] *= one_minus_weight; 
+                  u_data[i] += relax_weight * res / A_diag_data[A_diag_i[i]];
+               }
+            }     
+         }
+	 if (num_procs > 1)
+         {
+	    jx_TFree(Vext_data);
+	    jx_TFree(v_buf_data);
+         }
+
+   return(relax_error);
+}
+
+/*!
+ * \fn JX_Int jx_PAMGRelaxAI0
+ */
+JX_Int
+jx_PAMGRelaxAI0( jx_ParCSRMatrix *par_matrix,
+                 jx_ParVector    *par_rhs,
+                 JX_Int             *cf_marker,
+                 JX_Int             *relax_marker,
+                 JX_Int              relax_points,
+                 JX_Real           relax_weight,
+                 JX_Real           omega,
+                 jx_ParVector    *par_app,
+                 jx_ParVector    *Vtemp )
+{
+   MPI_Comm         comm         = jx_ParCSRMatrixComm(par_matrix);
+   jx_CSRMatrix    *A_diag       = jx_ParCSRMatrixDiag(par_matrix);
+   JX_Real          *A_diag_data  = jx_CSRMatrixData(A_diag);
+   JX_Int             *A_diag_i     = jx_CSRMatrixI(A_diag);
+   JX_Int             *A_diag_j     = jx_CSRMatrixJ(A_diag);
+   jx_CSRMatrix    *A_offd       = jx_ParCSRMatrixOffd(par_matrix);
+   JX_Int             *A_offd_i     = jx_CSRMatrixI(A_offd);
+   JX_Real          *A_offd_data  = jx_CSRMatrixData(A_offd);
+   JX_Int             *A_offd_j     = jx_CSRMatrixJ(A_offd);
+   jx_ParCSRCommPkg    *comm_pkg = jx_ParCSRMatrixCommPkg(par_matrix);
+   jx_ParCSRCommHandle *comm_handle = NULL;
+
+   JX_Int             n        = jx_CSRMatrixNumRows(A_diag);
+   JX_Int             num_cols_offd = jx_CSRMatrixNumCols(A_offd);
+   
+   jx_Vector      *u_local = jx_ParVectorLocalVector(par_app);
+   JX_Real         *u_data  = jx_VectorData(u_local);
+
+   jx_Vector      *f_local = jx_ParVectorLocalVector(par_rhs);
+   JX_Real         *f_data  = jx_VectorData(f_local);
+
+   jx_Vector      *Vtemp_local = jx_ParVectorLocalVector(Vtemp);
+   JX_Real         *Vtemp_data  = jx_VectorData(Vtemp_local);
+   JX_Real 	  *Vext_data  = NULL;
+   JX_Real 	  *v_buf_data = NULL;
+   
+   JX_Int             i, j;
+   JX_Int             ii, jj;
+   JX_Int             relax_error = 0;
+   JX_Int             num_sends = 0;
+   JX_Int             index, start;
+   JX_Int             num_procs, my_id;
+
+   JX_Real          zero = 0.0;
+   JX_Real          res;
+   JX_Real          one_minus_weight;
+
+   one_minus_weight = 1.0 - relax_weight;
+
+   jx_MPI_Comm_size(comm, &num_procs);  
+   jx_MPI_Comm_rank(comm, &my_id);  
+
+  /*-------------------------------------------------------------------------
+   * added by peghoty, if the comm_pkg of par_matrix is not created  
+   * previously, something will be wrong when the "relax" function  
+   * is called on multi-processors occasions.  2009/07/24
+   *----------------------------------------------------------------------- */
+   
+   if (!comm_pkg)
+   {
+      jx_MatvecCommPkgCreate(par_matrix);
+      comm_pkg = jx_ParCSRMatrixCommPkg(par_matrix); 
+   }
+
+   
+      //------------------------------------------------------------------------------//
+      //-----------------------------   Weighted Jacobi  -----------------------------//
+      //------------------------------------------------------------------------------//
+      
+	 if (num_procs > 1)
+	 {
+   	    num_sends  = jx_ParCSRCommPkgNumSends(comm_pkg);
+   	    v_buf_data = jx_CTAlloc(JX_Real, jx_ParCSRCommPkgSendMapStart(comm_pkg, num_sends));
+	    Vext_data  = jx_CTAlloc(JX_Real,num_cols_offd);
+       
+	    if (num_cols_offd)
+	    {
+               A_offd_j = jx_CSRMatrixJ(A_offd);
+               A_offd_data = jx_CSRMatrixData(A_offd);
+	    }
+   	    index = 0;
+   	    for (i = 0; i < num_sends; i ++)
+   	    {
+        	start = jx_ParCSRCommPkgSendMapStart(comm_pkg, i);
+        	for (j = start; j < jx_ParCSRCommPkgSendMapStart(comm_pkg, i+1); j ++)
+        	{
+                   v_buf_data[index ++] = u_data[jx_ParCSRCommPkgSendMapElmt(comm_pkg, j)];
+                }
+   	    }
+ 
+   	    comm_handle = jx_ParCSRCommHandleCreate(1, comm_pkg, v_buf_data, Vext_data);
+	 }
+
+        /*-----------------------------------------------------------------
+         * Copy current approximation into temporary vector.
+         *-----------------------------------------------------------------*/
+         
+#define JX_SMP_PRIVATE i
+#include "../../../include/jx_smp_forloop.h"
+         for (i = 0; i < n; i ++)
+         {
+            Vtemp_data[i] = u_data[i];
+         }
+	 if (num_procs > 1)
+	 { 
+            jx_ParCSRCommHandleDestroy(comm_handle);
+            comm_handle = NULL;
+	 } 
+
+        /*-----------------------------------------------------------------
+         * Relax all points.
+         *-----------------------------------------------------------------*/
+
+         if (relax_points == 0)
+         {
+#define JX_SMP_PRIVATE i,ii,jj,res
+#include "../../../include/jx_smp_forloop.h"
+            for (i = 0; i < n; i ++)
+            {
+
+              /*----------------------------------------------------------------
+               * If diagonal is nonzero, relax point i; otherwise, skip it.
+               *---------------------------------------------------------------*/
+             
+               if (A_diag_data[A_diag_i[i]] != zero && relax_marker[i] == 1 )
+               {
+                  res = f_data[i];
+                  for (jj = A_diag_i[i]+1; jj < A_diag_i[i+1]; jj ++)
+                  {
+                     ii = A_diag_j[jj];
+                     res -= A_diag_data[jj] * Vtemp_data[ii];
+                  }
+                  for (jj = A_offd_i[i]; jj < A_offd_i[i+1]; jj ++)
+                  {
+                     ii = A_offd_j[jj];
+                     res -= A_offd_data[jj] * Vext_data[ii];
+                  }
+                  u_data[i] *= one_minus_weight; 
+                  u_data[i] += relax_weight * res / A_diag_data[A_diag_i[i]];
+               }
+            }
+         }
+
+        /*-----------------------------------------------------------------
+         * Relax only C or F points as determined by relax_points.
+         *-----------------------------------------------------------------*/
+
+         else
+         {
+#define JX_SMP_PRIVATE i,ii,jj,res
+#include "../../../include/jx_smp_forloop.h"
+            for (i = 0; i < n; i ++)
+            {
+
+              /*-----------------------------------------------------------
+               * If i is of the right type ( C or F ) and diagonal is
+               * nonzero, relax point i; otherwise, skip it.
+               *-----------------------------------------------------------*/
+             
+               if (cf_marker[i] == relax_points && A_diag_data[A_diag_i[i]] != zero && relax_marker[i] == 1 )
+               {
+                  res = f_data[i];
+                  for (jj = A_diag_i[i]+1; jj < A_diag_i[i+1]; jj ++)
+                  {
+                     ii = A_diag_j[jj];
+                     res -= A_diag_data[jj] * Vtemp_data[ii];
+                  }
+                  for (jj = A_offd_i[i]; jj < A_offd_i[i+1]; jj ++)
+                  {
+                     ii = A_offd_j[jj];
+                     res -= A_offd_data[jj] * Vext_data[ii];
+                  }
+                  u_data[i] *= one_minus_weight; 
+                  u_data[i] += relax_weight * res / A_diag_data[A_diag_i[i]];
+               }
+            }     
+         }
+	 if (num_procs > 1)
+         {
+	    jx_TFree(Vext_data);
+	    jx_TFree(v_buf_data);
+         }
+
+   return(relax_error);
+}

@@ -1,0 +1,125 @@
+#========================================================================#
+#  JXPAMG(IAPCM & XTU Parallel Algebraic Multigrid) (c) 2009-2013        #
+#  Institute of Applied Physics and Computational Mathematics            #
+#  School of Mathematics and Computational Science Xiangtan University   #
+#  peghoty@163.com   (Zhou Zhiyang)                                      #
+#  xwxu@iapcm.ac.cn  (Xu Xiaowen)                                        #
+#  yuexq1111@163.com (Yue Xiaoqiang)                                     #
+#========================================================================#
+
+# Created by peghoty 2011/09/022
+# Modified by Yue Xiaoqiang on 2012/10/22
+
+#+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+# JXPAMG directory, MPI and MKL diectory
+#+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+#JXPAMGDIR = /home/spring/ljc/jxpamg_702_sharesetup/jxpamg-0220-pr
+JXPAMGDIR = /home/spring/ljc/jxpamg_702_sharesetup/jxpamg-0220-pr
+
+MPIDIR=/opt/intel/oneapi/mpi/2021.6.0
+
+MKL_DIR=/opt/intel/oneapi/mkl/2022.1.0
+
+#+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+# Use the OpenMP parallelism [YES] or not [#YES]
+#+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+JXPAMG_USE_OMP = YES
+
+#+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+# Use big-int and big-double structures [YES] or not [#YES]
+#+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+JX_USE_BIG_INT = #YES
+JX_USE_BIG_DOUBLE = YES
+
+#+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+# suffixes
+#+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+.SUFFIXES:.c .f90 .f .for
+
+#+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+# compiler
+#+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ifdef JXPAMG_USE_OMP
+FC = mpiifort -fopenmp
+CC = mpiicc -fopenmp
+else
+FC = $(MPIDIR)/bin/mpiifort
+CC = $(MPIDIR)/bin/mpiicc
+endif
+
+#+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+# compile option
+#+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+DEST := ./install
+
+ifdef JXPAMG_USE_OMP
+JX_OMP_CP_OPTION = -DJX_USING_OPENMP=1
+else
+JX_OMP_CP_OPTION = -DJX_USING_OPENMP=0
+endif
+
+ifdef JX_USE_BIG_INT
+JX_BIG_INT_OPTION = -DJX_USING_BIG_INT=1
+else
+JX_BIG_INT_OPTION = -DJX_USING_BIG_INT=0
+endif
+
+ifdef JX_USE_BIG_DOUBLE
+JX_BIG_DOUBLE_OPTION = -DJX_USING_BIG_DOUBLE=1
+else
+JX_BIG_DOUBLE_OPTION = -DJX_USING_BIG_DOUBLE=0
+endif
+
+C_COMPILE_OPTION = -O2 -DJXPAMG_PR_ENABLE_TAIL_REBUILD=1 -DJXPAMG_PR_ENABLE_3B2=1 ${JX_OMP_CP_OPTION} ${JX_BIG_INT_OPTION} ${JX_BIG_DOUBLE_OPTION}
+F_COMPILE_OPTION = -O2
+CDEFS  = 
+FDEFS  = ${CDEFS}
+
+C_COMPILE_FLAGS = -fPIC -O2
+F_COMPILE_FLAGS = -fPIC -O2
+
+#+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+# include
+#+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+JXPAMGINCLUDES = -I ${JXPAMGDIR}/include
+MPIINCLUDES    = -I ${MPIDIR}/include
+MKLINCLUDES    = -I $(MKL_DIR)/include  
+
+AllCINCLUDES   = ${JXPAMGINCLUDES} ${MPIINCLUDES} ${MKLINCLUDES}
+
+#+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+# basic libs
+#+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+MATHLIB = #-lm
+CPPLIB  = -lstdc++
+MPILIB  = -L ${MPIDIR}/lib -lmpi -lmpicxx
+
+#+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+# libs for building jxpamg lib
+#+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+LIBS2JXPAMG = ${MPILIB} ${MATHLIB} ${CPPLIB}
+
+CFLAGS = ${CDEFS} ${C_COMPILE_OPTION} ${AllCINCLUDES} ${LIBS2JXPAMG}
+FFLAGS = ${FDEFS} ${F_COMPILE_OPTION} ${AllCINCLUDES} ${LIBS2JXPAMG}
+
+#+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+# rules for compiling the source files
+#+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+.c.o:
+	${CC} -o $@ -c ${CFLAGS} $<
+.f.o:
+	${FC} -o $@ -c ${FFLAGS} $<
+.for.o:
+	${FC} -o $@ -c ${FFLAGS} $<
+.f90.o:
+	${FC} -o $@ -c ${FFLAGS} $<
+
+#+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+# all libs for running programs
+#+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+JXPAMGLIB  = -L ${JXPAMGDIR}/lib -lJXPAMG
+MKLLIB     = -L $(MKL_DIR)/lib/intel64 -lmkl_intel_lp64 -lmkl_intel_thread -lmkl_core -liomp5 -lpthread -ldl
+
+ALLLIBS    =  ${JXPAMGLIB} ${LIBS2JXPAMG} ${MKLLIB}
+
+JXPAMG_PR_ENABLE_3B2 = YES
